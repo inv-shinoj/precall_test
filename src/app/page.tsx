@@ -1,6 +1,6 @@
 // app/page.tsx
 'use client';
-import AgoraRTC, { IMicrophoneAudioTrack } from 'agora-rtc-sdk-ng';
+import AgoraRTC, { IMicrophoneAudioTrack, ICameraVideoTrack } from 'agora-rtc-sdk-ng';
 import React, { useMemo, useReducer, useCallback, useRef } from 'react';
 import {
   APP_ID,
@@ -103,8 +103,11 @@ function getInitialState(): AppState {
 // ---------- Page ----------
 export default function Page() {
   const [state, dispatch] = useReducer(reducer, undefined, getInitialState);
+
   const localAudioTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
   const microphoneCheckTimerRef = useRef<number | null>(null);
+  const localVideoTrackRef = useRef<ICameraVideoTrack | null>(null);
+
 
   // Derived values
   const currentStep = useMemo(
@@ -114,11 +117,139 @@ export default function Page() {
 
   // Checks
 
-  // Camera check
-  const handleCameraCheck = useCallback(() => {
-    console.log("Camera checking...");
-    // dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '3' });
+  // Handle connectivity check
+  const handleConnectivityCheck = useCallback(() => {
+    console.log("Connectivity checking...");
+    // dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '4' });
   }, []);
+
+  const checkProfile = useCallback(
+  async (profile: { width: number; height: number; resolution: string; status?: string }) => {
+    try {
+      // Stop & close existing track
+      if (localVideoTrackRef.current) {
+        localVideoTrackRef.current.stop();
+        localVideoTrackRef.current.close();
+        localVideoTrackRef.current = null;
+      }
+
+      // Create new video track with specific profile
+      localVideoTrackRef.current = await AgoraRTC.createCameraVideoTrack({
+        encoderConfig: profile.resolution,
+      });
+
+      // Play the video track
+      localVideoTrackRef.current.play('test-send');
+
+      return new Promise<void>((resolve, reject) => {
+        setTimeout(() => {
+          const videoElement = document.querySelector<HTMLVideoElement>('#test-send video');
+
+          if (videoElement) {
+            const videoArea = videoElement.videoWidth * videoElement.videoHeight;
+            const profileArea = profile.width * profile.height;
+
+            if (videoArea === profileArea) {
+              profile.status = 'resolve';
+              resolve();
+            } else {
+              profile.status = 'reject';
+              reject(new Error('Resolution mismatched'));
+            }
+          } else {
+            profile.status = 'reject';
+            reject(new Error('Video element not found'));
+          }
+        }, 1000);
+      });
+    } catch (error: any) {
+      profile.status = 'reject';
+      throw error;
+    }
+  },
+  []
+  );
+
+  // Camera check
+  const handleCameraCheck = useCallback(async () => {
+  const testSuiteId = '3';
+  dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: testSuiteId });
+
+  let successCount = 0;
+  const totalCount = state.profiles.length;
+  const errors: string[] = [];
+
+  for (const [index, profile] of state.profiles.entries()) {
+    try {
+      await checkProfile(profile);
+      successCount++;
+    } catch (error: any) {
+      console.warn(
+        `Resolution ${profile.width}x${profile.height} failed:`,
+        error?.message ?? error
+      );
+      errors.push(
+        `${profile.width}x${profile.height}: ${error?.message ?? error}`
+      );
+    } finally {
+      // Stop & clean video track
+      if (localVideoTrackRef.current) {
+        localVideoTrackRef.current.stop();
+        localVideoTrackRef.current.close();
+        localVideoTrackRef.current = null;
+      }
+    }
+  }
+
+  // Build detailed results display
+  const details = state.profiles.map(profile => {
+    const supportText = profile.status === 'resolve' ? 'Supported' : 'Not Supported';
+    return `${profile.width} * ${profile.height} ${supportText}`;
+  }).join('<br/>');
+
+  // Determine overall success
+  const keyResolutions = [
+    { width: 640, height: 480 },   // 480p
+    { width: 1280, height: 720 },  // 720p
+    { width: 1920, height: 1080 }  // 1080p
+  ];
+
+  const keyResolutionsWorking = state.profiles.filter(profile =>
+    keyResolutions.some(
+      key => profile.width === key.width && profile.height === key.height && profile.status === 'resolve'
+    )
+  ).length;
+
+  const successRate = totalCount > 0 ? successCount / totalCount : 0;
+
+  const overallNotError = keyResolutionsWorking >= 2 || successRate >= 0.6;
+
+  const summaryText = overallNotError
+    ? `Summary: ${successCount}/${totalCount} resolutions supported (${Math.round(successRate * 100)}%)`
+    : `Too few resolutions supported: ${successCount}/${totalCount} (${Math.round(successRate * 100)}%)`;
+
+  dispatch({
+    type: 'UPDATE_TEST_SUITE',
+    payload: {
+      id: testSuiteId,
+      updates: {
+        extra: details + '<br/><br/><strong>' + summaryText + '</strong>',
+        notError: overallNotError,
+      },
+    },
+  });
+
+  if (errors.length > 0) {
+    console.warn('Resolution test errors:', errors);
+  }
+
+  // Move to connectivity check after a short delay
+  setTimeout(() => {
+    handleConnectivityCheck?.();
+  }, 1500);
+}, [state.profiles, checkProfile, handleConnectivityCheck]);
+
+
 
   // Speaker check
 const handleSpeakerCheck = useCallback(() => {
