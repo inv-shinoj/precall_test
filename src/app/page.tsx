@@ -1,336 +1,448 @@
+// app/page.tsx
 'use client';
+import AgoraRTC, { IMicrophoneAudioTrack } from 'agora-rtc-sdk-ng';
+import React, { useMemo, useReducer, useCallback, useRef } from 'react';
+import {
+  APP_ID,
+  defaultProxyConfig,
+  initialTestSuites,
+  profileArray,
+  SUPPORTED_LANGUAGES,
+  DOM_IDS,
+} from '@/constants/settings';
+import type { AppState, TestAction, TestSuite, Language } from '@/types';
 
-import React, { useState } from 'react';
-import { Card, CardHeader, CardContent, CardActions } from '@/components/ui/Card';
-import Button from '@/components/ui/Button';
-import Stepper, { StepContent } from '@/components/ui/Stepper';
-import { initialTestSuites, GITHUB_URL, validateConfig } from '@/constants/settings';
-import { TestSuite } from '@/types';
-
-// Header component
-function Header({ onStart, testing }: { onStart: () => void; testing: boolean }) {
-  return (
-    <div className="bg-blue-600 text-white shadow-lg">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          <div className="flex items-center space-x-4">
-            <h1 className="text-xl font-semibold">Agora WebRTC Troubleshooting</h1>
-            <a 
-              href={GITHUB_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-2 rounded-full hover:bg-blue-700 transition-colors"
-              aria-label="View GitHub Repository"
-            >
-              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-              </svg>
-            </a>
-          </div>
-          
-          <div className="flex items-center space-x-4">
-            <Button
-              onClick={onStart}
-              variant={testing ? 'error' : 'success'}
-              disabled={testing}
-            >
-              {testing ? 'Running Tests...' : 'Start Test'}
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Footer component
-function Footer() {
-  return (
-    <footer className="bg-gray-100 border-t border-gray-200 mt-auto">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-        <div className="text-right text-sm text-gray-600">
-          SDK Version: Coming Soon
-        </div>
-      </div>
-    </footer>
-  );
-}
-
-// Cloud proxy configuration component
-function ProxyConfig({ 
-  isEnabled, 
-  fixedMode, 
-  onToggleProxy, 
-  onToggleMode 
-}: {
-  isEnabled: boolean;
-  fixedMode: boolean;
-  onToggleProxy: (enabled: boolean) => void;
-  onToggleMode: (fixed: boolean) => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          Cloud Proxy
-        </label>
-        <div className="flex space-x-2">
-          <Button
-            variant={isEnabled ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => onToggleProxy(true)}
-          >
-            Enable
-          </Button>
-          <Button
-            variant={!isEnabled ? 'primary' : 'secondary'}
-            size="small"
-            onClick={() => onToggleProxy(false)}
-          >
-            Disable
-          </Button>
-        </div>
-      </div>
-
-      {isEnabled && (
-        <>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Proxy Mode
-            </label>
-            <div className="flex space-x-2">
-              <Button
-                variant={!fixedMode ? 'primary' : 'secondary'}
-                size="small"
-                onClick={() => onToggleMode(false)}
-              >
-                Default
-              </Button>
-              <Button
-                variant={fixedMode ? 'primary' : 'secondary'}
-                size="small"
-                onClick={() => onToggleMode(true)}
-              >
-                Fixed Port
-              </Button>
-            </div>
-          </div>
-
-          {fixedMode && (
-            <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
-              <div className="flex items-start">
-                <svg className="w-5 h-5 text-blue-400 mt-0.5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                </svg>
-                <div className="text-sm text-blue-700">
-                  Fixed port mode requires specific firewall configuration. 
-                  <a 
-                    href="https://docs.agora.io/cn/Audio%20Broadcast/cloud_proxy_web?platform=Web" 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="underline ml-1"
-                  >
-                    Learn more
-                  </a>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-// Start page component
-function StartPage({ onStart }: { onStart: () => void }) {
-  const [isEnableCloudProxy, setIsEnableCloudProxy] = useState(false);
-  const [fixProxyPort, setFixProxyPort] = useState(false);
-
-  return (
-    <div className="max-w-2xl mx-auto mt-16">
-      <Card variant="elevated">
-        <CardHeader>
-          <h2 className="text-2xl font-semibold">WebRTC Diagnostic Tests</h2>
-        </CardHeader>
-        
-        <CardContent className="space-y-6">
-          <ProxyConfig
-            isEnabled={isEnableCloudProxy}
-            fixedMode={fixProxyPort}
-            onToggleProxy={setIsEnableCloudProxy}
-            onToggleMode={setFixProxyPort}
-          />
-
-          <div>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">
-              The following tests will be performed:
-            </h3>
-            <ul className="space-y-2">
-              {initialTestSuites.map((suite) => (
-                <li key={suite.id} className="flex items-center text-gray-700">
-                  <svg className="w-5 h-5 text-blue-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  {suite.label.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                </li>
-              ))}
-            </ul>
-          </div>
-        </CardContent>
-
-        <CardActions>
-          <Button onClick={onStart} variant="primary" size="large">
-            Start Diagnostic Tests
-          </Button>
-        </CardActions>
-      </Card>
-    </div>
-  );
-}
-
-// Test results page
-function TestResults({ testSuites, onRestart }: { testSuites: TestSuite[]; onRestart: () => void }) {
-  return (
-    <div className="max-w-4xl mx-auto mt-8">
-      <Card variant="elevated">
-        <CardHeader color="info">
-          <h2 className="text-2xl font-semibold">Test Report</h2>
-        </CardHeader>
-        
-        <CardContent>
-          <div className="space-y-4">
-            {testSuites.map((suite) => (
-              <div key={suite.id} className="border border-gray-200 rounded-lg">
-                <div className="flex items-center p-4 cursor-pointer hover:bg-gray-50">
-                  <div className="flex-shrink-0 mr-4">
-                    {suite.notError ? (
-                      <svg className="w-6 h-6 text-green-600" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                      </svg>
-                    ) : (
-                      <svg className="w-6 h-6 text-red-600" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                      </svg>
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="text-lg font-medium text-gray-900">
-                      {suite.label.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                    </h3>
-                    {suite.extra && (
-                      <div 
-                        className="mt-2 text-sm text-gray-600"
-                        dangerouslySetInnerHTML={{ __html: suite.extra }}
-                      />
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-
-        <CardActions>
-          <Button onClick={onRestart} variant="primary">
-            Run Tests Again
-          </Button>
-        </CardActions>
-      </Card>
-    </div>
-  );
-}
-
-// Main page component
-export default function Home() {
-  const [currentTestSuite, setCurrentTestSuite] = useState('-1');
-  const [testing, setTesting] = useState(false);
-  const [testSuites, setTestSuites] = useState<TestSuite[]>(initialTestSuites);
-
-  const handleStart = () => {
-    // Validate configuration
-    const config = validateConfig();
-    if (!config.isValid) {
-      alert(`Configuration Error:\n${config.errors.join('\n')}`);
-      return;
+// ---------- Reducer ----------
+function reducer(state: AppState, action: TestAction): AppState {
+  switch (action.type) {
+    case 'SET_CURRENT_TEST_SUITE':
+      return { ...state, currentTestSuite: action.payload };
+    case 'SET_TESTING':
+      return { ...state, testing: action.payload };
+    case 'SWITCH_LANGUAGE': {
+      const next: Language = state.language === 'en' ? 'zh' : 'en';
+      return { ...state, language: next };
     }
+    case 'SET_LANGUAGE_DISABLED':
+      return { ...state, languageDisabled: action.payload };
+    case 'SET_RENDER_CHART':
+      return { ...state, renderChart: action.payload };
+    case 'UPDATE_TEST_SUITE': {
+      const { id, updates } = action.payload;
+      const testSuites = state.testSuites.map(ts =>
+        ts.id === id ? { ...ts, ...updates } : ts
+      );
+      return { ...state, testSuites };
+    }
+    case 'UPDATE_PROFILE_STATUS': {
+      const { index, status } = action.payload;
+      const profiles = state.profiles.map((p, i) =>
+        i === index ? { ...p, status } : p
+      );
+      return { ...state, profiles };
+    }
+    case 'ADD_BITRATE_DATA':
+      return {
+        ...state,
+        bitrateData: { ...state.bitrateData, rows: [...state.bitrateData.rows, action.payload] },
+      };
+    case 'ADD_PACKET_DATA':
+      return {
+        ...state,
+        packetsData: { ...state.packetsData, rows: [...state.packetsData.rows, action.payload] },
+      };
+    case 'UPDATE_RTM_STATUS':
+      return { ...state, rtmStatus: { ...state.rtmStatus, ...action.payload } };
+    case 'UPDATE_RTM_METRICS':
+      return { ...state, rtmMetrics: { ...state.rtmMetrics, ...action.payload } };
+    case 'SET_PROXY_CONFIG':
+      return {
+        ...state,
+        isEnableCloudProxy: action.payload.isEnabled ?? state.isEnableCloudProxy,
+        fixProxyPort: (action.payload.mode ?? (state.fixProxyPort ? 'fixed' : 'default')) === 'fixed',
+      };
+    case 'RESET_STATE':
+      return getInitialState();
+    default:
+      return state;
+  }
+}
 
-    setTesting(true);
-    setCurrentTestSuite('0');
-    // TODO: Initialize Agora clients and start test sequence
+// ---------- Initial State ----------
+function getInitialState(): AppState {
+  return {
+    currentTestSuite: '0',
+    testing: false,
+    language: 'en',
+    languageDisabled: false,
+    browserInfo: '',
+    sdkVersion: '',
+    inputVolume: 0,
+    renderChart: false,
+    showVideo: false,
+    dialog: false,
+    snackbar: false,
+    isEnableCloudProxy: defaultProxyConfig.isEnabled,
+    fixProxyPort: defaultProxyConfig.mode === 'fixed',
+    profiles: profileArray.map(p => ({ ...p, status: 'pending' })),
+    testSuites: initialTestSuites.map(s => ({ ...s })),
+    bitrateData: { columns: ['index', 'tVideoBitrate', 'tAudioBitrate'], rows: [] },
+    packetsData: { columns: ['index', 'tVideoPacketLoss', 'tAudioPacketLoss'], rows: [] },
+    rtmStatus: { login: 'pending', channel: 'pending', messaging: 'pending' },
+    rtmMetrics: { messagesSent: 0, messagesReceived: 0, successRate: 0, avgLatency: 0, latencies: [] },
+    rtmTestMessages: [],
+    errMsgForTry: '',
+    currentProfile: 0,
   };
+}
 
-  const handleRestart = () => {
-    setCurrentTestSuite('-1');
-    setTesting(false);
-    setTestSuites(initialTestSuites.map(suite => ({ 
-      ...suite, 
-      notError: true, 
-      complete: false, 
-      extra: '' 
-    })));
-  };
 
-  // Show start page
-  if (currentTestSuite === '-1') {
-    return (
-      <>
-        <Header onStart={handleStart} testing={testing} />
-        <main className="flex-1 py-8 px-4 sm:px-6 lg:px-8">
-          <StartPage onStart={handleStart} />
-        </main>
-        <Footer />
-      </>
-    );
+
+
+
+// ---------- Page ----------
+export default function Page() {
+  const [state, dispatch] = useReducer(reducer, undefined, getInitialState);
+  const localAudioTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
+  const microphoneCheckTimerRef = useRef<number | null>(null);
+
+  // Derived values
+  const currentStep = useMemo(
+    () => state.testSuites.find(s => s.id === state.currentTestSuite),
+    [state.testSuites, state.currentTestSuite]
+  );
+
+  // Checks
+
+  // Camera check
+  const handleCameraCheck = useCallback(() => {
+    console.log("Camera checking...");
+    // dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '3' });
+  }, []);
+
+  // Speaker check
+const handleSpeakerCheck = useCallback(() => {
+  dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '2' });
+}, []);
+
+const resolveSpeakerCheck = useCallback(() => {
+  const testSuiteId = '2';
+  const audioEl = document.querySelector<HTMLAudioElement>('#sampleMusic');
+
+  if (audioEl) {
+    audioEl.pause();
+    audioEl.currentTime = 0;
   }
 
-  // Show results page
-  if (currentTestSuite === '6' || parseInt(currentTestSuite) > 5) {
-    return (
-      <>
-        <Header onStart={handleStart} testing={testing} />
-        <main className="flex-1 py-8 px-4 sm:px-6 lg:px-8">
-          <TestResults testSuites={testSuites} onRestart={handleRestart} />
-        </main>
-        <Footer />
-      </>
-    );
+  dispatch({
+    type: 'UPDATE_TEST_SUITE',
+    payload: {
+      id: testSuiteId,
+      updates: {
+        notError: true,
+        extra: 'Speaker works well',
+      },
+    },
+  });
+
+  // Proceed to next step, e.g., camera check
+  handleCameraCheck?.();
+}, [handleCameraCheck]);
+
+const rejectSpeakerCheck = useCallback(() => {
+  const testSuiteId = '2';
+  const audioEl = document.querySelector<HTMLAudioElement>('#sampleMusic');
+
+  if (audioEl) {
+    audioEl.pause();
+    audioEl.currentTime = 0;
   }
 
-  // Show test progress page
+  dispatch({
+    type: 'UPDATE_TEST_SUITE',
+    payload: {
+      id: testSuiteId,
+      updates: {
+        notError: false,
+        extra: 'Speaker not working properly',
+      },
+    },
+  });
+
+  handleCameraCheck?.();
+}, [handleCameraCheck]);
+
+
+  // Microphone Check
+  const handleMicrophoneCheck = useCallback(async () => {
+  // Set current test suite to "1"
+  dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '1' });
+  const testSuiteId = '1';
+
+  try {
+    // Create microphone audio track
+    const localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+    localAudioTrackRef.current = localAudioTrack;
+
+    let totalVolume = 0;
+    let sampleCount = 0;
+
+    // Monitor audio level every 100ms
+    microphoneCheckTimerRef.current = window.setInterval(() => {
+      if (!localAudioTrackRef.current) return;
+      const volumeLevel = localAudioTrackRef.current.getVolumeLevel();
+      const inputVolume = Math.floor(volumeLevel * 100);
+      totalVolume += inputVolume;
+      sampleCount++;
+
+      // Optionally, you can store the latest inputVolume in state if you want UI feedback
+      // dispatch({ type: 'SET_INPUT_VOLUME', payload: inputVolume });
+    }, 100);
+
+    // Run check for 7 seconds
+    setTimeout(() => {
+      if (microphoneCheckTimerRef.current !== null) {
+        window.clearInterval(microphoneCheckTimerRef.current);
+        microphoneCheckTimerRef.current = null;
+      }
+
+      if (localAudioTrackRef.current) {
+        localAudioTrackRef.current.stop();
+        localAudioTrackRef.current.close();
+        localAudioTrackRef.current = null;
+      }
+
+      const averageVolume = sampleCount > 0 ? totalVolume / sampleCount : 0;
+
+      dispatch({
+        type: 'UPDATE_TEST_SUITE',
+        payload: {
+          id: testSuiteId,
+          updates: {
+            notError: averageVolume >= 10,
+            extra: averageVolume < 10 ? 'Can barely hear you' : 'Microphone works well',
+          },
+        },
+      });
+
+      // Proceed to speaker check (stub for now)
+      handleSpeakerCheck();
+    }, 7000);
+
+  } catch (error: any) {
+    dispatch({
+      type: 'UPDATE_TEST_SUITE',
+      payload: {
+        id: testSuiteId,
+        updates: {
+          notError: false,
+          extra: error.message,
+        },
+      },
+    });
+
+    handleSpeakerCheck();
+  }
+}, []);
+
+  // Compatibility Check
+  const handleCompatibilityCheck = useCallback(() => {
+    dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '0' });
+    const testSuiteId = '0';
+
+    setTimeout(() => {
+      const isSupported = AgoraRTC.checkSystemRequirements();
+
+      dispatch({
+        type: 'UPDATE_TEST_SUITE',
+        payload: {
+          id: testSuiteId,
+          updates: {
+            notError: isSupported,
+            extra: isSupported ? 'Fully supported' : 'Some functions may be limited',
+          },
+        },
+      });
+
+      handleMicrophoneCheck();
+    }, 3000);
+  }, [handleMicrophoneCheck]);
+
+
+  // Handlers
+  const startTest = useCallback(() => {
+    if (!APP_ID) {
+      // We’ll surface better validation in step 2
+      console.error('APP_ID missing. Set NEXT_PUBLIC_APP_ID.');
+    }
+    dispatch({ type: 'SET_TESTING', payload: true });
+    dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '0' });
+    handleCompatibilityCheck();
+  }, []);
+
+  const resetTest = useCallback(() => {
+    dispatch({ type: 'RESET_STATE' });
+  }, []);
+
+  const switchLanguage = useCallback(() => {
+    dispatch({ type: 'SWITCH_LANGUAGE' });
+  }, []);
+
+  const toggleCloudProxy = useCallback(() => {
+    dispatch({
+      type: 'SET_PROXY_CONFIG',
+      payload: { isEnabled: !state.isEnableCloudProxy, mode: state.fixProxyPort ? 'fixed' : 'default' },
+    });
+  }, [state.isEnableCloudProxy, state.fixProxyPort]);
+
+  const setProxyModeFixed = useCallback((fixed: boolean) => {
+    dispatch({ type: 'SET_PROXY_CONFIG', payload: { mode: fixed ? 'fixed' : 'default' } });
+  }, []);
+
+  const onStepClick = useCallback((stepId: string) => {
+    dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: stepId });
+  }, []);
+
   return (
-    <>
-      <Header onStart={handleStart} testing={testing} />
-      <main className="flex-1 py-8 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-6xl mx-auto">
-          <Stepper 
-            currentStep={currentTestSuite}
-            testSuites={testSuites}
-            className="mb-8"
-          />
-          
-          <StepContent>
-            <div className="text-center py-12">
-              <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-                Test Suite {parseInt(currentTestSuite) + 1}
-              </h2>
-              <p className="text-gray-600">
-                Individual test components will be rendered here
-              </p>
-              <div className="mt-8">
-                <Button onClick={() => setCurrentTestSuite((parseInt(currentTestSuite) + 1).toString())}>
-                  Next Test (Temporary)
-                </Button>
-              </div>
-            </div>
-          </StepContent>
+    <main className="min-h-screen p-4 md:p-8">
+      {/* Toolbar */}
+      <header className="flex items-center justify-between gap-4 border-b pb-4 mb-6">
+        <h1 className="text-xl md:text-2xl font-semibold">Agora Precall Test</h1>
 
-          {/* Hidden test elements for Agora SDK */}
-          <div id="test-send" className="fixed -right-full w-160 h-90" />
-          <div id="test-recv" className="fixed -right-full w-160 h-90" />
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={switchLanguage}
+            disabled={state.languageDisabled}
+            className="px-3 py-1 rounded border hover:bg-gray-50"
+          >
+            Language: {state.language.toUpperCase()}
+          </button>
+
+          <div className="flex items-center gap-2">
+            <label className="text-sm">Cloud Proxy</label>
+            <input
+              type="checkbox"
+              checked={state.isEnableCloudProxy}
+              onChange={toggleCloudProxy}
+              className="h-4 w-4"
+            />
+            <select
+              className="border rounded px-2 py-1 text-sm"
+              value={state.fixProxyPort ? 'fixed' : 'default'}
+              onChange={(e) => setProxyModeFixed(e.target.value === 'fixed')}
+              disabled={!state.isEnableCloudProxy}
+            >
+              <option value="default">default</option>
+              <option value="fixed">fixed</option>
+            </select>
+          </div>
+
+          <button
+            type="button"
+            onClick={startTest}
+            className="px-3 py-1 rounded bg-black text-white hover:opacity-90"
+          >
+            {state.testing ? 'Restart' : 'Start'}
+          </button>
+
+          {state.testing && (
+            <button
+              type="button"
+              onClick={resetTest}
+              className="px-3 py-1 rounded border hover:bg-gray-50"
+            >
+              Reset
+            </button>
+          )}
         </div>
-      </main>
-      <Footer />
-    </>
+      </header>
+
+      {/* Body */}
+      <div className="grid md:grid-cols-[260px,1fr] gap-6">
+        {/* Stepper */}
+        <nav className="border rounded-lg p-3">
+          <ol className="space-y-1">
+            {state.testSuites.map((s: TestSuite) => {
+              const active = s.id === state.currentTestSuite;
+              const statusClass = s.complete ? 'text-green-700' : s.notError ? 'text-gray-700' : 'text-red-700';
+              return (
+                <li key={s.id}>
+                  <button
+                    onClick={() => onStepClick(s.id)}
+                    className={`w-full text-left px-3 py-2 rounded hover:bg-gray-50 ${active ? 'bg-gray-100' : ''}`}
+                  >
+                    <div className={`text-sm font-medium ${statusClass}`}>
+                      {s.label.replaceAll('_', ' ')}
+                    </div>
+                    {s.extra ? <div className="text-xs text-gray-500">{s.extra}</div> : null}
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+        </nav>
+
+        {/* Step Content (placeholder for now) */}
+        {/* Step Content */}
+<section className="border rounded-lg p-4 min-h-[320px]">
+  <h2 className="text-lg font-semibold mb-3">
+    Step: {currentStep?.label ?? 'unknown'}
+  </h2>
+
+  {currentStep?.id === '2' ? (
+    <div className="flex flex-col md:flex-row gap-4">
+      {/* Speaker description + buttons */}
+      <div className="flex-1 border rounded-lg p-4 bg-blue-100">
+        <p className="mb-4">
+          Please listen to the sample audio and confirm if you can hear it clearly.
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={resolveSpeakerCheck}
+            className="px-4 py-2 rounded bg-green-600 text-white"
+          >
+            Yes
+          </button>
+          <button
+            onClick={rejectSpeakerCheck}
+            className="px-4 py-2 rounded border"
+          >
+            No
+          </button>
+        </div>
+      </div>
+
+      {/* Sample Audio */}
+      <div className="flex-1 border rounded-lg p-4">
+        <audio id="sampleMusic" controls className="w-full">
+          <source src="music.mp3" type="audio/mp3" />
+          Your browser does not support the audio element.
+        </audio>
+      </div>
+    </div>
+  ) : (
+    <p className="text-sm text-gray-600">
+      This is the placeholder for the actual test component. In Step 2 we’ll wire real logic:
+      <br />• Browser/permission checks (step 0)
+      <br />• Mic & Speaker tests (steps 1–2)
+      <br />• Resolution tests (step 3)
+      <br />• Connectivity stats (step 4)
+      <br />• RTM messaging (step 5)
+    </p>
+  )}
+
+  {/* Hidden test elements for Agora SDK (keep in DOM) */}
+  <div id={DOM_IDS.TEST_SEND} className="fixed -right-full w-[160px] h-[90px]" />
+  <div id={DOM_IDS.TEST_RECV} className="fixed -right-full w-[160px] h-[90px]" />
+</section>
+
+      </div>
+
+      {/* Footer (optional – layout.tsx might already have one) */}
+      <footer className="mt-8 text-center text-xs text-gray-500">
+        {`APP_ID set: ${APP_ID ? 'yes' : 'no'}`} • Languages: {SUPPORTED_LANGUAGES.join(', ').toUpperCase()}
+      </footer>
+    </main>
   );
 }
