@@ -1,7 +1,8 @@
 // app/page.tsx
 'use client';
-import AgoraRTC, { IMicrophoneAudioTrack, ICameraVideoTrack } from 'agora-rtc-sdk-ng';
-import React, { useMemo, useReducer, useCallback, useRef } from 'react';
+import AgoraRTC, { IMicrophoneAudioTrack, ICameraVideoTrack, IAgoraRTCClient } from 'agora-rtc-sdk-ng';
+import AgoraRTM from 'agora-rtm-sdk';
+import React, { useMemo, useReducer, useCallback, useRef, useEffect } from 'react';
 import {
   APP_ID,
   defaultProxyConfig,
@@ -9,6 +10,12 @@ import {
   profileArray,
   SUPPORTED_LANGUAGES,
   DOM_IDS,
+  DEFAULT_CHANNEL,
+  DEFAULT_RECEIVER_ID,
+  DEFAULT_SENDER_ID,
+  DEFAULT_RTM_USER_ID,
+  RKEY,
+  SKEY
 } from '@/constants/settings';
 import type { AppState, TestAction, TestSuite, Language } from '@/types';
 
@@ -97,17 +104,31 @@ function getInitialState(): AppState {
 }
 
 
-
-
-
 // ---------- Page ----------
 export default function Page() {
   const [state, dispatch] = useReducer(reducer, undefined, getInitialState);
 
-  const localAudioTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
   const microphoneCheckTimerRef = useRef<number | null>(null);
+  const sendClientRef = useRef<IAgoraRTCClient | null>(null);
+  const recvClientRef = useRef<IAgoraRTCClient | null>(null);
+  const localAudioTrackRef = useRef<IMicrophoneAudioTrack | null>(null);
   const localVideoTrackRef = useRef<ICameraVideoTrack | null>(null);
+  const detectIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const remoteUsersRef = useRef<Record<string, any>>({});
+  const connectivityIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const stateRef = useRef(state);
+  const rtmClientRef = useRef<any>(null);
+  const rtmTestIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Keep state ref updated
+  useEffect(() => {
+  stateRef.current = state;
+}, [state]);
+
+  const channel = DEFAULT_CHANNEL;
+  const sendId = DEFAULT_SENDER_ID;
+  const recvId = DEFAULT_RECEIVER_ID;
+  const rtmUserId = DEFAULT_RTM_USER_ID;
 
   // Derived values
   const currentStep = useMemo(
@@ -115,13 +136,319 @@ export default function Page() {
     [state.testSuites, state.currentTestSuite]
   );
 
-  // Checks
+  
+  // Initialize send client
+  const initSendClient = useCallback(async () => {
+  if (!sendClientRef.current) {
+    sendClientRef.current = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
+  }
+  const client = sendClientRef.current!;
+  try {
+    await client.setClientRole("host");
+    console.error(APP_ID);
+    await client.join(APP_ID, channel, SKEY, sendId);
+
+    localAudioTrackRef.current = await AgoraRTC.createMicrophoneAudioTrack();
+    localVideoTrackRef.current = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "1080p_1" });
+
+    localVideoTrackRef.current.play(DOM_IDS.TEST_SEND);
+    await client.publish([localAudioTrackRef.current, localVideoTrackRef.current]);
+  } catch (err: any) {
+    console.error(APP_ID);
+    throw new Error(err.message || err);
+  }
+}, [channel, rtmUserId, sendId]);
+
+  // Initialize receive client
+  const initRecvClient = useCallback(async () => {
+  if (!recvClientRef.current) {
+    recvClientRef.current = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
+  }
+  const client = recvClientRef.current!;
+  try {
+    await client.setClientRole("audience");
+    await client.join(APP_ID, channel, RKEY, recvId);
+
+    client.on("user-published", async (user, mediaType) => {
+      await client.subscribe(user, mediaType);
+
+      if (mediaType === "video" && user.videoTrack) {
+        user.videoTrack.play(DOM_IDS.TEST_RECV);
+        remoteUsersRef.current[user.uid] = user;
+      }
+
+      if (mediaType === "audio" && user.audioTrack) {
+        user.audioTrack.setVolume(0); // mute remote audio
+      }
+    });
+
+    client.on("user-unpublished", (user) => {
+      delete remoteUsersRef.current[user.uid];
+      if (state.currentTestSuite === "4" && state.testing) {
+        console.warn("User unpublished during active test");
+        if (detectIntervalRef.current) clearInterval(detectIntervalRef.current);
+        dispatch({ type: "UPDATE_TEST_SUITE", payload: { id: "4", updates: { notError: false, extra: "User disconnected during test" } } });
+      }
+    });
+
+    client.on("connection-state-change", (curState) => {
+      if (state.currentTestSuite === "4" && state.testing && (curState === "DISCONNECTED" || curState === "DISCONNECTING")) {
+        console.warn("Unexpected disconnect");
+        if (detectIntervalRef.current) clearInterval(detectIntervalRef.current);
+        dispatch({ type: "UPDATE_TEST_SUITE", payload: { id: "4", updates: { notError: false, extra: "Unexpected connection lost" } } });
+      }
+    });
+  } catch (err: any) {
+    throw new Error(err.message || err);
+  }
+}, [channel, state.currentTestSuite, state.testing, recvId]);
+
+  /* Checks */
+
+  // handle rtm check
+  const finishRTMTest = useCallback(() => {
+    if (rtmTestIntervalRef.current) clearInterval(rtmTestIntervalRef.current);
+    const testSuiteId = '5';
+    const rtmStatus = stateRef.current.rtmStatus;
+    const rtmMetrics = stateRef.current.rtmMetrics;
+    let testSuite = stateRef.current.testSuites.find(s => s.id === testSuiteId);
+    let extra = '';
+    let notError = false;
+    if (rtmStatus.login === 'success' && rtmStatus.channel === 'success') {
+      if (rtmMetrics.messagesSent > 0) {
+        const finalSuccessRate = Math.round((rtmMetrics.messagesReceived / rtmMetrics.messagesSent) * 100);
+        if (finalSuccessRate >= 70) {
+          notError = true;
+          extra = `RTM Login: Success</br>Channel Join: Success</br>Messages Sent: ${rtmMetrics.messagesSent}</br>Messages Received: ${rtmMetrics.messagesReceived}</br>Success Rate: ${finalSuccessRate}%</br>Average Latency: ${rtmMetrics.avgLatency}ms</br><strong>RTM functionality working well</strong>`;
+        } else {
+          extra = `RTM messaging has issues</br>Success Rate: ${finalSuccessRate}% (below 70% threshold)</br>Messages Sent: ${rtmMetrics.messagesSent}</br>Messages Received: ${rtmMetrics.messagesReceived}`;
+        }
+      } else {
+        extra = 'No RTM messages were sent during test';
+      }
+    } else {
+      extra = testSuite?.extra || 'RTM login or channel join failed';
+    }
+    dispatch({
+      type: 'UPDATE_TEST_SUITE',
+      payload: { id: testSuiteId, updates: { notError, extra } },
+    });
+    setTimeout(() => {
+      dispatch({ type: 'SET_TESTING', payload: false });
+      dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '6' });
+      // Optionally: cleanup RTM client here
+      setTimeout(() => {
+        dispatch({ type: 'SET_RENDER_CHART', payload: false });
+      }, 1500);
+    }, 2000);
+  }, [dispatch]);
+
+  // handle rtm check
+  const handleRTMCheck = useCallback(async () => {
+    const testSuiteId = '5';
+    dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: testSuiteId });
+    dispatch({ type: 'UPDATE_RTM_STATUS', payload: { login: 'pending', channel: 'pending', messaging: 'pending' } });
+    dispatch({ type: 'UPDATE_RTM_METRICS', payload: { messagesSent: 0, messagesReceived: 0, successRate: 0, avgLatency: 0, latencies: [] } });
+    try {
+      if (!AgoraRTM || !AgoraRTM.RTM) throw new Error('AgoraRTM SDK v2.x RTM class is not loaded');
+      rtmClientRef.current = new AgoraRTM.RTM(APP_ID, rtmUserId);
+      // Login
+      try {
+        await rtmClientRef.current.login({ token: process.env.NEXT_PUBLIC_RTM_TOKEN || null, uid: rtmUserId });
+        dispatch({ type: 'UPDATE_RTM_STATUS', payload: { login: 'success' } });
+      } catch (error: any) {
+        dispatch({ type: 'UPDATE_RTM_STATUS', payload: { login: 'failed' } });
+        dispatch({ type: 'UPDATE_TEST_SUITE', payload: { id: testSuiteId, updates: { notError: false, extra: `Login failed: ${error.message}` } } });
+        finishRTMTest();
+        return;
+      }
+      // Channel subscribe
+      const channelName = channel + '_rtm';
+      try {
+        rtmClientRef.current.addEventListener('message', (eventArgs: any) => {
+          if (eventArgs.channelName === channelName) {
+            const message = eventArgs.message;
+            // Find test message and update metrics
+            let testMsg = stateRef.current.rtmTestMessages.find((msg: any) => message.includes(msg.id) && msg.receivedAt === 0);
+            if (testMsg) {
+              testMsg.receivedAt = Date.now();
+              testMsg.latency = testMsg.receivedAt - testMsg.sentAt;
+              const newLatencies = [...stateRef.current.rtmMetrics.latencies, testMsg.latency];
+              const avgLatency = Math.round(newLatencies.reduce((a, b) => a + b, 0) / newLatencies.length);
+              dispatch({ type: 'UPDATE_RTM_METRICS', payload: { messagesReceived: stateRef.current.rtmMetrics.messagesReceived + 1, latencies: newLatencies, avgLatency } });
+              const successRate = Math.round((stateRef.current.rtmMetrics.messagesReceived + 1) / stateRef.current.rtmMetrics.messagesSent * 100);
+              dispatch({ type: 'UPDATE_RTM_METRICS', payload: { successRate } });
+            }
+          }
+        });
+        await rtmClientRef.current.subscribe(channelName);
+        dispatch({ type: 'UPDATE_RTM_STATUS', payload: { channel: 'success' } });
+      } catch (error: any) {
+        dispatch({ type: 'UPDATE_RTM_STATUS', payload: { channel: 'failed' } });
+        dispatch({ type: 'UPDATE_TEST_SUITE', payload: { id: testSuiteId, updates: { notError: false, extra: `Channel subscribe failed: ${error.message}` } } });
+        finishRTMTest();
+        return;
+      }
+      // Messaging test
+      dispatch({ type: 'UPDATE_RTM_STATUS', payload: { messaging: 'pending' } });
+      let messageCount = 0;
+      rtmTestIntervalRef.current = setInterval(async () => {
+        try {
+          messageCount++;
+          const messageId = `test_${Date.now()}_${messageCount}`;
+          const testMessage = { id: messageId, sentAt: Date.now(), receivedAt: 0, latency: 0 };
+          stateRef.current.rtmTestMessages.push(testMessage);
+          await rtmClientRef.current.publish(channelName, `RTM Test Message ${messageId}`);
+          dispatch({ type: 'UPDATE_RTM_METRICS', payload: { messagesSent: stateRef.current.rtmMetrics.messagesSent + 1 } });
+        } catch (error) {
+          // handle error
+        }
+      }, 2000);
+      setTimeout(() => {
+        finishRTMTest();
+      }, 12000);
+    } catch (error: any) {
+      dispatch({ type: 'UPDATE_RTM_STATUS', payload: { login: 'failed', channel: 'failed', messaging: 'failed' } });
+      dispatch({ type: 'UPDATE_TEST_SUITE', payload: { id: testSuiteId, updates: { notError: false, extra: `RTM test failed: ${error.message}` } } });
+      finishRTMTest();
+    }
+  }, [dispatch, channel, rtmUserId, finishRTMTest]);
 
   // Handle connectivity check
-  const handleConnectivityCheck = useCallback(() => {
-    console.log("Connectivity checking...");
-    // dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '4' });
-  }, []);
+const handleConnectivityCheck = useCallback(async () => {
+  const testSuiteId = "4";
+  dispatch({ type: "SET_CURRENT_TEST_SUITE", payload: testSuiteId });
+
+  const statsIndexRef = { current: 1 };
+
+  try {
+    // Initialize clients
+    await initRecvClient();
+    await initSendClient();
+
+    dispatch({ type: "SET_RENDER_CHART", payload: true });
+
+    // Start collecting stats every 1s
+    connectivityIntervalRef.current = setInterval(async () => {
+      try {
+        if (!recvClientRef.current) return;
+
+        const rtcStats = await recvClientRef.current.getRTCStats();
+        const remoteAudioStats = await recvClientRef.current.getRemoteAudioStats();
+        const remoteVideoStats = await recvClientRef.current.getRemoteVideoStats();
+
+        let videoBitrate = 0;
+        let audioBitrate = 0;
+        let videoPacketLoss = 0;
+        let audioPacketLoss = 0;
+        console.log(remoteVideoStats, remoteAudioStats)
+        Object.values(remoteVideoStats).forEach(userStats => {
+          videoBitrate += userStats.receiveBitrate || 0;
+          videoPacketLoss = Math.max(videoPacketLoss, userStats.packetLossRate || 0);
+        });
+
+        Object.values(remoteAudioStats).forEach(userStats => {
+          console.log("userstats", userStats)
+          audioBitrate += userStats.receiveBitrate || 0;
+          console.log("audioBitrate Object:", audioBitrate)
+          audioPacketLoss = Math.max(audioPacketLoss, userStats.packetLossRate || 0);
+        });
+        console.log("audioBitrate outside object:", audioBitrate);
+        
+        dispatch({
+          type: "ADD_BITRATE_DATA",
+          payload: {
+            index: statsIndexRef.current,
+            tVideoBitrate: (videoBitrate / 1000).toFixed(2),
+            tAudioBitrate: (audioBitrate / 1000).toFixed(2)
+          }
+        });
+
+        dispatch({
+          type: "ADD_PACKET_DATA",
+          payload: {
+            index: statsIndexRef.current,
+            tVideoPacketLoss: videoPacketLoss,
+            tAudioPacketLoss: audioPacketLoss
+          }
+        });
+        console.log("videoPacketLoss:", videoPacketLoss, "audioPacketLoss:", audioPacketLoss);
+
+        statsIndexRef.current += 1;
+      } catch (err) {
+        console.warn("Failed to get stats:", err);
+      }
+    }, 1000);
+
+  } catch (err: any) {
+    dispatch({
+      type: "UPDATE_TEST_SUITE",
+      payload: { id: testSuiteId, updates: { notError: false, extra: err.message || String(err) } }
+    });
+    return;
+  }
+
+  // Stop test after 24 seconds
+  setTimeout(() => {
+    if (connectivityIntervalRef.current) clearInterval(connectivityIntervalRef.current);
+    dispatch({ type: "SET_TESTING", payload: false });
+
+    setTimeout(() => {
+      // Use stateRef.current instead of state to get the most current values
+      const bitrateRows = stateRef.current.bitrateData.rows;
+      const packetRows = stateRef.current.packetsData.rows;
+
+      console.log("Current bitrate rows:", bitrateRows);
+      console.log("Current packet rows:", packetRows);
+
+      let extra = "";
+      let notError = true;
+
+      if (bitrateRows.length <= 1 || packetRows.length <= 1) {
+        extra = "Poor connection: insufficient data";
+        notError = false;
+      } else {
+        const lastBitrate = bitrateRows[bitrateRows.length - 1];
+        const lastPacket = packetRows[packetRows.length - 1];
+
+        let videoBitrate = Number(lastBitrate.tVideoBitrate);
+        let audioBitrate = Number(lastBitrate.tAudioBitrate);
+        let videoPacketLoss = lastPacket.tVideoPacketLoss;
+        let audioPacketLoss = lastPacket.tAudioPacketLoss;
+
+        if (videoBitrate <= 0 || audioBitrate <= 0) {
+          extra += "<strong>Connection failed: No data transmission</strong>";
+          notError = false;
+        } else {
+          let quality = "Good";
+          if (videoBitrate < 100 || audioBitrate < 10) quality = "Poor";
+          else if (videoBitrate < 500 || audioBitrate < 20) quality = "Fair";
+          else if (videoBitrate > 1000 && audioBitrate > 25) quality = "Excellent";
+
+          videoPacketLoss = videoPacketLoss !== "-" ? (Number(videoPacketLoss) * 100).toFixed(2) : "-";
+          audioPacketLoss = audioPacketLoss !== "-" ? (Number(audioPacketLoss) * 100).toFixed(2) : "-";
+
+          extra = `
+            Video Bitrate: ${videoBitrate} kbps </br>
+            Audio Bitrate: ${audioBitrate} kbps </br>
+            Video Packet Loss: ${videoPacketLoss} % </br>
+            Audio Packet Loss: ${audioPacketLoss} % </br>
+            <strong>Connection Quality: ${quality}</strong>
+          `;
+        }
+      }
+
+      dispatch({
+        type: "UPDATE_TEST_SUITE",
+        payload: { id: testSuiteId, updates: { extra, notError } }
+      });
+
+      // Proceed to RTM test
+      handleRTMCheck();
+    }, 1500);
+  }, 24000);
+
+}, [initRecvClient, initSendClient, handleRTMCheck]);
 
   const checkProfile = useCallback(
   async (profile: { width: number; height: number; resolution: string; status?: string }) => {
@@ -249,8 +576,6 @@ export default function Page() {
   }, 1500);
 }, [state.profiles, checkProfile, handleConnectivityCheck]);
 
-
-
   // Speaker check
 const handleSpeakerCheck = useCallback(() => {
   dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '2' });
@@ -302,7 +627,6 @@ const rejectSpeakerCheck = useCallback(() => {
 
   handleCameraCheck?.();
 }, [handleCameraCheck]);
-
 
   // Microphone Check
   const handleMicrophoneCheck = useCallback(async () => {
@@ -356,7 +680,6 @@ const rejectSpeakerCheck = useCallback(() => {
         },
       });
 
-      // Proceed to speaker check (stub for now)
       handleSpeakerCheck();
     }, 7000);
 
@@ -403,7 +726,6 @@ const rejectSpeakerCheck = useCallback(() => {
   // Handlers
   const startTest = useCallback(() => {
     if (!APP_ID) {
-      // We’ll surface better validation in step 2
       console.error('APP_ID missing. Set NEXT_PUBLIC_APP_ID.');
     }
     dispatch({ type: 'SET_TESTING', payload: true });
