@@ -1,8 +1,15 @@
+
 // app/page.tsx
 'use client';
 import AgoraRTC, { IMicrophoneAudioTrack, ICameraVideoTrack, IAgoraRTCClient } from 'agora-rtc-sdk-ng';
+import { checkProfile, destructAll } from '@/utils/agoraUtils';
 import AgoraRTM from 'agora-rtm-sdk';
 import React, { useMemo, useReducer, useCallback, useRef, useEffect } from 'react';
+import Toolbar from '@/components/ui/Toolbar';
+import Stepper from '@/components/ui/Stepper';
+import StepContent from '@/components/ui/StepContent';
+import TestReport from '@/components/ui/TestReport';
+import Footer from '@/components/ui/Footer';
 import {
   APP_ID,
   defaultProxyConfig,
@@ -17,96 +24,18 @@ import {
   RKEY,
   SKEY
 } from '@/constants/settings';
-import type { AppState, TestAction, TestSuite, Language } from '@/types';
-
-// ---------- Reducer ----------
-function reducer(state: AppState, action: TestAction): AppState {
-  switch (action.type) {
-    case 'SET_CURRENT_TEST_SUITE':
-      return { ...state, currentTestSuite: action.payload };
-    case 'SET_TESTING':
-      return { ...state, testing: action.payload };
-    case 'SWITCH_LANGUAGE': {
-      const next: Language = state.language === 'en' ? 'zh' : 'en';
-      return { ...state, language: next };
-    }
-    case 'SET_LANGUAGE_DISABLED':
-      return { ...state, languageDisabled: action.payload };
-    case 'SET_RENDER_CHART':
-      return { ...state, renderChart: action.payload };
-    case 'UPDATE_TEST_SUITE': {
-      const { id, updates } = action.payload;
-      const testSuites = state.testSuites.map(ts =>
-        ts.id === id ? { ...ts, ...updates } : ts
-      );
-      return { ...state, testSuites };
-    }
-    case 'UPDATE_PROFILE_STATUS': {
-      const { index, status } = action.payload;
-      const profiles = state.profiles.map((p, i) =>
-        i === index ? { ...p, status } : p
-      );
-      return { ...state, profiles };
-    }
-    case 'ADD_BITRATE_DATA':
-      return {
-        ...state,
-        bitrateData: { ...state.bitrateData, rows: [...state.bitrateData.rows, action.payload] },
-      };
-    case 'ADD_PACKET_DATA':
-      return {
-        ...state,
-        packetsData: { ...state.packetsData, rows: [...state.packetsData.rows, action.payload] },
-      };
-    case 'UPDATE_RTM_STATUS':
-      return { ...state, rtmStatus: { ...state.rtmStatus, ...action.payload } };
-    case 'UPDATE_RTM_METRICS':
-      return { ...state, rtmMetrics: { ...state.rtmMetrics, ...action.payload } };
-    case 'SET_PROXY_CONFIG':
-      return {
-        ...state,
-        isEnableCloudProxy: action.payload.isEnabled ?? state.isEnableCloudProxy,
-        fixProxyPort: (action.payload.mode ?? (state.fixProxyPort ? 'fixed' : 'default')) === 'fixed',
-      };
-    case 'RESET_STATE':
-      return getInitialState();
-    default:
-      return state;
-  }
-}
-
-// ---------- Initial State ----------
-function getInitialState(): AppState {
-  return {
-    currentTestSuite: '0',
-    testing: false,
-    language: 'en',
-    languageDisabled: false,
-    browserInfo: '',
-    sdkVersion: '',
-    inputVolume: 0,
-    renderChart: false,
-    showVideo: false,
-    dialog: false,
-    snackbar: false,
-    isEnableCloudProxy: defaultProxyConfig.isEnabled,
-    fixProxyPort: defaultProxyConfig.mode === 'fixed',
-    profiles: profileArray.map(p => ({ ...p, status: 'pending' })),
-    testSuites: initialTestSuites.map(s => ({ ...s })),
-    bitrateData: { columns: ['index', 'tVideoBitrate', 'tAudioBitrate'], rows: [] },
-    packetsData: { columns: ['index', 'tVideoPacketLoss', 'tAudioPacketLoss'], rows: [] },
-    rtmStatus: { login: 'pending', channel: 'pending', messaging: 'pending' },
-    rtmMetrics: { messagesSent: 0, messagesReceived: 0, successRate: 0, avgLatency: 0, latencies: [] },
-    rtmTestMessages: [],
-    errMsgForTry: '',
-    currentProfile: 0,
-  };
-}
+import { reducer, getInitialState } from '@/state/reducer';
 
 
 // ---------- Page ----------
 export default function Page() {
   const [state, dispatch] = useReducer(reducer, undefined, getInitialState);
+  // Snackbar/Toast state
+  const [snackbarOpen, setSnackbarOpen] = React.useState(false);
+  const [snackbarMsg, setSnackbarMsg] = React.useState('');
+  // Dialog/Modal state for retry
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [dialogMsg, setDialogMsg] = React.useState('');
 
   const microphoneCheckTimerRef = useRef<number | null>(null);
   const sendClientRef = useRef<IAgoraRTCClient | null>(null);
@@ -119,11 +48,37 @@ export default function Page() {
   const stateRef = useRef(state);
   const rtmClientRef = useRef<any>(null);
   const rtmTestIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const rtmMessageListenerRef = useRef<any>(null);
+  const rtmTestMessagesRef = useRef<any[]>([]);
 
   // Keep state ref updated
   useEffect(() => {
-  stateRef.current = state;
-}, [state]);
+    stateRef.current = state;
+  }, [state]);
+
+
+  // Clean up all Agora/RTM resources and timers (moved to utils)
+  const destructAllCallback = useCallback(async () => {
+    await destructAll({
+      localAudioTrackRef,
+      localVideoTrackRef,
+      sendClientRef,
+      recvClientRef,
+      rtmClientRef,
+      detectIntervalRef,
+      connectivityIntervalRef,
+      rtmTestIntervalRef,
+    });
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      destructAllCallback();
+      setSnackbarOpen(false);
+      setDialogOpen(false);
+    };
+  }, [destructAllCallback]);
 
   const channel = DEFAULT_CHANNEL;
   const sendId = DEFAULT_SENDER_ID;
@@ -139,75 +94,75 @@ export default function Page() {
   
   // Initialize send client
   const initSendClient = useCallback(async () => {
-  if (!sendClientRef.current) {
-    sendClientRef.current = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
-  }
-  const client = sendClientRef.current!;
-  try {
-    await client.setClientRole("host");
-    console.error(APP_ID);
-    await client.join(APP_ID, channel, SKEY, sendId);
+    try {
+      if (!sendClientRef.current) {
+        sendClientRef.current = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
+      }
+      const client = sendClientRef.current!;
+      await client.setClientRole("host");
+      await client.join(APP_ID, channel, SKEY, sendId);
 
-    localAudioTrackRef.current = await AgoraRTC.createMicrophoneAudioTrack();
-    localVideoTrackRef.current = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "1080p_1" });
+      localAudioTrackRef.current = await AgoraRTC.createMicrophoneAudioTrack();
+      localVideoTrackRef.current = await AgoraRTC.createCameraVideoTrack({ encoderConfig: "1080p_1" });
 
-    localVideoTrackRef.current.play(DOM_IDS.TEST_SEND);
-    await client.publish([localAudioTrackRef.current, localVideoTrackRef.current]);
-  } catch (err: any) {
-    console.error(APP_ID);
-    throw new Error(err.message || err);
-  }
-}, [channel, rtmUserId, sendId]);
+      localVideoTrackRef.current.play(DOM_IDS.TEST_SEND);
+      await client.publish([localAudioTrackRef.current, localVideoTrackRef.current]);
+    } catch (err: any) {
+      // Log error and rethrow for upstream handling
+      console.error("Error initializing send client:", err);
+      throw new Error(err.message || err);
+    }
+  }, [channel, rtmUserId, sendId]);
 
   // Initialize receive client
   const initRecvClient = useCallback(async () => {
-  if (!recvClientRef.current) {
-    recvClientRef.current = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
-  }
-  const client = recvClientRef.current!;
-  try {
-    await client.setClientRole("audience");
-    await client.join(APP_ID, channel, RKEY, recvId);
-
-    client.on("user-published", async (user, mediaType) => {
-      await client.subscribe(user, mediaType);
-
-      if (mediaType === "video" && user.videoTrack) {
-        user.videoTrack.play(DOM_IDS.TEST_RECV);
-        remoteUsersRef.current[user.uid] = user;
+    try {
+      if (!recvClientRef.current) {
+        recvClientRef.current = AgoraRTC.createClient({ mode: "live", codec: "vp8" });
       }
+      const client = recvClientRef.current!;
+      await client.setClientRole("audience");
+      await client.join(APP_ID, channel, RKEY, recvId);
 
-      if (mediaType === "audio" && user.audioTrack) {
-        user.audioTrack.setVolume(0); // mute remote audio
-      }
-    });
+      client.on("user-published", async (user, mediaType) => {
+        try {
+          await client.subscribe(user, mediaType);
+          if (mediaType === "video" && user.videoTrack) {
+            user.videoTrack.play(DOM_IDS.TEST_RECV);
+            remoteUsersRef.current[user.uid] = user;
+          }
+          if (mediaType === "audio" && user.audioTrack) {
+            user.audioTrack.setVolume(0); // mute remote audio
+          }
+        } catch (err) {
+          console.error("Error subscribing to user media:", err);
+        }
+      });
 
-    client.on("user-unpublished", (user) => {
-      delete remoteUsersRef.current[user.uid];
-      if (state.currentTestSuite === "4" && state.testing) {
-        console.warn("User unpublished during active test");
-        if (detectIntervalRef.current) clearInterval(detectIntervalRef.current);
-        dispatch({ type: "UPDATE_TEST_SUITE", payload: { id: "4", updates: { notError: false, extra: "User disconnected during test" } } });
-      }
-    });
+      client.on("user-unpublished", (user) => {
+        delete remoteUsersRef.current[user.uid];
+        if (state.currentTestSuite === "4" && state.testing) {
+          if (detectIntervalRef.current) clearInterval(detectIntervalRef.current);
+          dispatch({ type: "UPDATE_TEST_SUITE", payload: { id: "4", updates: { notError: false, extra: "User disconnected during test" } } });
+        }
+      });
 
-    client.on("connection-state-change", (curState) => {
-      if (state.currentTestSuite === "4" && state.testing && (curState === "DISCONNECTED" || curState === "DISCONNECTING")) {
-        console.warn("Unexpected disconnect");
-        if (detectIntervalRef.current) clearInterval(detectIntervalRef.current);
-        dispatch({ type: "UPDATE_TEST_SUITE", payload: { id: "4", updates: { notError: false, extra: "Unexpected connection lost" } } });
-      }
-    });
-  } catch (err: any) {
-    throw new Error(err.message || err);
-  }
-}, [channel, state.currentTestSuite, state.testing, recvId]);
+      client.on("connection-state-change", (curState) => {
+        if (state.currentTestSuite === "4" && state.testing && (curState === "DISCONNECTED" || curState === "DISCONNECTING")) {
+          if (detectIntervalRef.current) clearInterval(detectIntervalRef.current);
+          dispatch({ type: "UPDATE_TEST_SUITE", payload: { id: "4", updates: { notError: false, extra: "Unexpected connection lost" } } });
+        }
+      });
+    } catch (err: any) {
+      console.error("Error initializing receive client:", err);
+      throw new Error(err.message || err);
+    }
+  }, [channel, state.currentTestSuite, state.testing, recvId]);
 
   /* Checks */
 
   // handle rtm check
   const finishRTMTest = useCallback(() => {
-    if (rtmTestIntervalRef.current) clearInterval(rtmTestIntervalRef.current);
     const testSuiteId = '5';
     const rtmStatus = stateRef.current.rtmStatus;
     const rtmMetrics = stateRef.current.rtmMetrics;
@@ -235,7 +190,7 @@ export default function Page() {
     });
     setTimeout(() => {
       dispatch({ type: 'SET_TESTING', payload: false });
-      dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '6' });
+  dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: 'final' });
       // Optionally: cleanup RTM client here
       setTimeout(() => {
         dispatch({ type: 'SET_RENDER_CHART', payload: false });
@@ -249,6 +204,7 @@ export default function Page() {
     dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: testSuiteId });
     dispatch({ type: 'UPDATE_RTM_STATUS', payload: { login: 'pending', channel: 'pending', messaging: 'pending' } });
     dispatch({ type: 'UPDATE_RTM_METRICS', payload: { messagesSent: 0, messagesReceived: 0, successRate: 0, avgLatency: 0, latencies: [] } });
+    rtmTestMessagesRef.current = [];
     try {
       if (!AgoraRTM || !AgoraRTM.RTM) throw new Error('AgoraRTM SDK v2.x RTM class is not loaded');
       rtmClientRef.current = new AgoraRTM.RTM(APP_ID, rtmUserId);
@@ -264,31 +220,30 @@ export default function Page() {
       }
       // Channel subscribe
       const channelName = channel + '_rtm';
-      try {
-        rtmClientRef.current.addEventListener('message', (eventArgs: any) => {
-          if (eventArgs.channelName === channelName) {
-            const message = eventArgs.message;
-            // Find test message and update metrics
-            let testMsg = stateRef.current.rtmTestMessages.find((msg: any) => message.includes(msg.id) && msg.receivedAt === 0);
-            if (testMsg) {
-              testMsg.receivedAt = Date.now();
-              testMsg.latency = testMsg.receivedAt - testMsg.sentAt;
-              const newLatencies = [...stateRef.current.rtmMetrics.latencies, testMsg.latency];
-              const avgLatency = Math.round(newLatencies.reduce((a, b) => a + b, 0) / newLatencies.length);
-              dispatch({ type: 'UPDATE_RTM_METRICS', payload: { messagesReceived: stateRef.current.rtmMetrics.messagesReceived + 1, latencies: newLatencies, avgLatency } });
-              const successRate = Math.round((stateRef.current.rtmMetrics.messagesReceived + 1) / stateRef.current.rtmMetrics.messagesSent * 100);
-              dispatch({ type: 'UPDATE_RTM_METRICS', payload: { successRate } });
-            }
+      rtmMessageListenerRef.current = (eventArgs: any) => {
+        if (eventArgs.channelName === channelName) {
+          const message = eventArgs.message;
+          // Find test message and update metrics (no direct mutation)
+          const idx = rtmTestMessagesRef.current.findIndex((msg) => message.includes(msg.id) && msg.receivedAt === 0);
+          if (idx !== -1) {
+            const testMsg = { ...rtmTestMessagesRef.current[idx], receivedAt: Date.now() };
+            testMsg.latency = testMsg.receivedAt - testMsg.sentAt;
+            rtmTestMessagesRef.current = [
+              ...rtmTestMessagesRef.current.slice(0, idx),
+              testMsg,
+              ...rtmTestMessagesRef.current.slice(idx + 1)
+            ];
+            const newLatencies = [...stateRef.current.rtmMetrics.latencies, testMsg.latency];
+            const avgLatency = Math.round(newLatencies.reduce((a, b) => a + b, 0) / newLatencies.length);
+            dispatch({ type: 'UPDATE_RTM_METRICS', payload: { messagesReceived: stateRef.current.rtmMetrics.messagesReceived + 1, latencies: newLatencies, avgLatency } });
+            const successRate = Math.round((stateRef.current.rtmMetrics.messagesReceived + 1) / stateRef.current.rtmMetrics.messagesSent * 100);
+            dispatch({ type: 'UPDATE_RTM_METRICS', payload: { successRate } });
           }
-        });
-        await rtmClientRef.current.subscribe(channelName);
-        dispatch({ type: 'UPDATE_RTM_STATUS', payload: { channel: 'success' } });
-      } catch (error: any) {
-        dispatch({ type: 'UPDATE_RTM_STATUS', payload: { channel: 'failed' } });
-        dispatch({ type: 'UPDATE_TEST_SUITE', payload: { id: testSuiteId, updates: { notError: false, extra: `Channel subscribe failed: ${error.message}` } } });
-        finishRTMTest();
-        return;
-      }
+        }
+      };
+      rtmClientRef.current.addEventListener('message', rtmMessageListenerRef.current);
+      await rtmClientRef.current.subscribe(channelName);
+      dispatch({ type: 'UPDATE_RTM_STATUS', payload: { channel: 'success' } });
       // Messaging test
       dispatch({ type: 'UPDATE_RTM_STATUS', payload: { messaging: 'pending' } });
       let messageCount = 0;
@@ -297,7 +252,7 @@ export default function Page() {
           messageCount++;
           const messageId = `test_${Date.now()}_${messageCount}`;
           const testMessage = { id: messageId, sentAt: Date.now(), receivedAt: 0, latency: 0 };
-          stateRef.current.rtmTestMessages.push(testMessage);
+          rtmTestMessagesRef.current = [...rtmTestMessagesRef.current, testMessage];
           await rtmClientRef.current.publish(channelName, `RTM Test Message ${messageId}`);
           dispatch({ type: 'UPDATE_RTM_METRICS', payload: { messagesSent: stateRef.current.rtmMetrics.messagesSent + 1 } });
         } catch (error) {
@@ -341,19 +296,19 @@ const handleConnectivityCheck = useCallback(async () => {
         let audioBitrate = 0;
         let videoPacketLoss = 0;
         let audioPacketLoss = 0;
-        console.log(remoteVideoStats, remoteAudioStats)
+  //
         Object.values(remoteVideoStats).forEach(userStats => {
           videoBitrate += userStats.receiveBitrate || 0;
           videoPacketLoss = Math.max(videoPacketLoss, userStats.packetLossRate || 0);
         });
 
         Object.values(remoteAudioStats).forEach(userStats => {
-          console.log("userstats", userStats)
+          //
           audioBitrate += userStats.receiveBitrate || 0;
-          console.log("audioBitrate Object:", audioBitrate)
+          //
           audioPacketLoss = Math.max(audioPacketLoss, userStats.packetLossRate || 0);
         });
-        console.log("audioBitrate outside object:", audioBitrate);
+  //
         
         dispatch({
           type: "ADD_BITRATE_DATA",
@@ -372,7 +327,7 @@ const handleConnectivityCheck = useCallback(async () => {
             tAudioPacketLoss: audioPacketLoss
           }
         });
-        console.log("videoPacketLoss:", videoPacketLoss, "audioPacketLoss:", audioPacketLoss);
+  //
 
         statsIndexRef.current += 1;
       } catch (err) {
@@ -398,8 +353,7 @@ const handleConnectivityCheck = useCallback(async () => {
       const bitrateRows = stateRef.current.bitrateData.rows;
       const packetRows = stateRef.current.packetsData.rows;
 
-      console.log("Current bitrate rows:", bitrateRows);
-      console.log("Current packet rows:", packetRows);
+  //
 
       let extra = "";
       let notError = true;
@@ -450,52 +404,7 @@ const handleConnectivityCheck = useCallback(async () => {
 
 }, [initRecvClient, initSendClient, handleRTMCheck]);
 
-  const checkProfile = useCallback(
-  async (profile: { width: number; height: number; resolution: string; status?: string }) => {
-    try {
-      // Stop & close existing track
-      if (localVideoTrackRef.current) {
-        localVideoTrackRef.current.stop();
-        localVideoTrackRef.current.close();
-        localVideoTrackRef.current = null;
-      }
-
-      // Create new video track with specific profile
-      localVideoTrackRef.current = await AgoraRTC.createCameraVideoTrack({
-        encoderConfig: profile.resolution,
-      });
-
-      // Play the video track
-      localVideoTrackRef.current.play('test-send');
-
-      return new Promise<void>((resolve, reject) => {
-        setTimeout(() => {
-          const videoElement = document.querySelector<HTMLVideoElement>('#test-send video');
-
-          if (videoElement) {
-            const videoArea = videoElement.videoWidth * videoElement.videoHeight;
-            const profileArea = profile.width * profile.height;
-
-            if (videoArea === profileArea) {
-              profile.status = 'resolve';
-              resolve();
-            } else {
-              profile.status = 'reject';
-              reject(new Error('Resolution mismatched'));
-            }
-          } else {
-            profile.status = 'reject';
-            reject(new Error('Video element not found'));
-          }
-        }, 1000);
-      });
-    } catch (error: any) {
-      profile.status = 'reject';
-      throw error;
-    }
-  },
-  []
-  );
+  // checkProfile is now imported from utils/agoraUtils
 
   // Camera check
   const handleCameraCheck = useCallback(async () => {
@@ -508,13 +417,9 @@ const handleConnectivityCheck = useCallback(async () => {
 
   for (const [index, profile] of state.profiles.entries()) {
     try {
-      await checkProfile(profile);
+      await checkProfile(profile, localVideoTrackRef);
       successCount++;
     } catch (error: any) {
-      console.warn(
-        `Resolution ${profile.width}x${profile.height} failed:`,
-        error?.message ?? error
-      );
       errors.push(
         `${profile.width}x${profile.height}: ${error?.message ?? error}`
       );
@@ -628,110 +533,39 @@ const rejectSpeakerCheck = useCallback(() => {
   handleCameraCheck?.();
 }, [handleCameraCheck]);
 
-  // Microphone Check
-  const handleMicrophoneCheck = useCallback(async () => {
-  // Set current test suite to "1"
-  dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '1' });
-  const testSuiteId = '1';
 
-  try {
-    // Create microphone audio track
-    const localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
-    localAudioTrackRef.current = localAudioTrack;
 
-    let totalVolume = 0;
-    let sampleCount = 0;
-
-    // Monitor audio level every 100ms
-    microphoneCheckTimerRef.current = window.setInterval(() => {
-      if (!localAudioTrackRef.current) return;
-      const volumeLevel = localAudioTrackRef.current.getVolumeLevel();
-      const inputVolume = Math.floor(volumeLevel * 100);
-      totalVolume += inputVolume;
-      sampleCount++;
-
-      // Optionally, you can store the latest inputVolume in state if you want UI feedback
-      // dispatch({ type: 'SET_INPUT_VOLUME', payload: inputVolume });
-    }, 100);
-
-    // Run check for 7 seconds
-    setTimeout(() => {
-      if (microphoneCheckTimerRef.current !== null) {
-        window.clearInterval(microphoneCheckTimerRef.current);
-        microphoneCheckTimerRef.current = null;
-      }
-
-      if (localAudioTrackRef.current) {
-        localAudioTrackRef.current.stop();
-        localAudioTrackRef.current.close();
-        localAudioTrackRef.current = null;
-      }
-
-      const averageVolume = sampleCount > 0 ? totalVolume / sampleCount : 0;
-
-      dispatch({
-        type: 'UPDATE_TEST_SUITE',
-        payload: {
-          id: testSuiteId,
-          updates: {
-            notError: averageVolume >= 10,
-            extra: averageVolume < 10 ? 'Can barely hear you' : 'Microphone works well',
-          },
-        },
-      });
-
-      handleSpeakerCheck();
-    }, 7000);
-
-  } catch (error: any) {
+  // Handle compatibility check completion from CompatibilityStep
+  const handleCompatibilityComplete = useCallback((isSupported: boolean) => {
+    const testSuiteId = '0';
     dispatch({
       type: 'UPDATE_TEST_SUITE',
       payload: {
         id: testSuiteId,
         updates: {
-          notError: false,
-          extra: error.message,
+          notError: isSupported,
+          extra: isSupported ? 'Fully supported' : 'Some functions may be limited',
         },
       },
     });
-
-    handleSpeakerCheck();
-  }
-}, []);
-
-  // Compatibility Check
-  const handleCompatibilityCheck = useCallback(() => {
-    dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '0' });
-    const testSuiteId = '0';
-
-    setTimeout(() => {
-      const isSupported = AgoraRTC.checkSystemRequirements();
-
-      dispatch({
-        type: 'UPDATE_TEST_SUITE',
-        payload: {
-          id: testSuiteId,
-          updates: {
-            notError: isSupported,
-            extra: isSupported ? 'Fully supported' : 'Some functions may be limited',
-          },
-        },
-      });
-
-      handleMicrophoneCheck();
-    }, 3000);
-  }, [handleMicrophoneCheck]);
+    // Move to microphone check step (step id '1')
+    dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '1' });
+  }, []);
 
 
   // Handlers
-  const startTest = useCallback(() => {
+  const startTest = useCallback(async () => {
     if (!APP_ID) {
       console.error('APP_ID missing. Set NEXT_PUBLIC_APP_ID.');
     }
+    // Reset all test state before starting a new test (like restore in Vue)
+    dispatch({ type: 'RESET_STATE' });
+    // Always cleanup all Agora/RTM resources before starting a new test
+    await destructAllCallback();
     dispatch({ type: 'SET_TESTING', payload: true });
     dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '0' });
-    handleCompatibilityCheck();
-  }, []);
+    // CompatibilityStep will handle the check and progression
+  }, [destructAllCallback]);
 
   const resetTest = useCallback(() => {
     dispatch({ type: 'RESET_STATE' });
@@ -756,146 +590,71 @@ const rejectSpeakerCheck = useCallback(() => {
     dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: stepId });
   }, []);
 
+  // Advance to speaker check after microphone test
+  const handleMicrophoneComplete = useCallback(() => {
+    dispatch({ type: 'SET_CURRENT_TEST_SUITE', payload: '2' });
+  }, []);
+
   return (
-    <main className="min-h-screen p-4 md:p-8">
-      {/* Toolbar */}
-      <header className="flex items-center justify-between gap-4 border-b pb-4 mb-6">
-        <h1 className="text-xl md:text-2xl font-semibold">Agora Precall Test</h1>
-
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={switchLanguage}
-            disabled={state.languageDisabled}
-            className="px-3 py-1 rounded border hover:bg-gray-50"
-          >
-            Language: {state.language.toUpperCase()}
-          </button>
-
-          <div className="flex items-center gap-2">
-            <label className="text-sm">Cloud Proxy</label>
-            <input
-              type="checkbox"
-              checked={state.isEnableCloudProxy}
-              onChange={toggleCloudProxy}
-              className="h-4 w-4"
-            />
-            <select
-              className="border rounded px-2 py-1 text-sm"
-              value={state.fixProxyPort ? 'fixed' : 'default'}
-              onChange={(e) => setProxyModeFixed(e.target.value === 'fixed')}
-              disabled={!state.isEnableCloudProxy}
-            >
-              <option value="default">default</option>
-              <option value="fixed">fixed</option>
-            </select>
+    <main className="min-h-screen bg-white text-gray-900 p-4 md:p-8 font-sans">
+      <Toolbar
+        language={state.language}
+        languageDisabled={state.languageDisabled || state.testing}
+        isEnableCloudProxy={state.isEnableCloudProxy}
+        fixProxyPort={state.fixProxyPort}
+        testing={state.testing}
+        onSwitchLanguage={switchLanguage}
+        onToggleCloudProxy={toggleCloudProxy}
+        onSetProxyModeFixed={setProxyModeFixed}
+        onStartTest={startTest}
+        onResetTest={resetTest}
+      />
+      <div className="grid md:grid-cols-[240px,1fr] gap-8">
+        <Stepper
+          testSuites={state.testSuites}
+          currentTestSuite={state.currentTestSuite}
+          onStepClick={onStepClick}
+        />
+        {state.currentTestSuite === 'final' ? (
+          <TestReport testSuites={state.testSuites} profiles={state.profiles} />
+        ) : (
+          <StepContent
+            currentStep={currentStep}
+            resolveSpeakerCheck={resolveSpeakerCheck}
+            rejectSpeakerCheck={rejectSpeakerCheck}
+            onMicrophoneComplete={handleMicrophoneComplete}
+            onCompatibilityComplete={handleCompatibilityComplete}
+            DOM_IDS={DOM_IDS}
+            snackbarOpen={snackbarOpen}
+            setSnackbarOpen={setSnackbarOpen}
+            snackbarMsg={snackbarMsg}
+            setSnackbarMsg={setSnackbarMsg}
+            dialogOpen={dialogOpen}
+            setDialogOpen={setDialogOpen}
+            dialogMsg={dialogMsg}
+            setDialogMsg={setDialogMsg}
+          />
+        )}
+      </div>
+      {/* Snackbar/Toast */}
+      {snackbarOpen && (
+        <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-4 py-2 rounded shadow-lg z-50">
+          {snackbarMsg}
+          <button className="ml-4 text-sm underline" onClick={() => setSnackbarOpen(false)}>Close</button>
+        </div>
+      )}
+      {/* Dialog/Modal for retry or info */}
+      {dialogOpen && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
+          <div className="bg-white p-6 rounded shadow-lg max-w-md w-full">
+            <div className="mb-4">{dialogMsg}</div>
+            <div className="flex justify-end gap-2">
+              <button className="px-4 py-2 bg-blue-600 text-white rounded" onClick={() => setDialogOpen(false)}>Close</button>
+            </div>
           </div>
-
-          <button
-            type="button"
-            onClick={startTest}
-            className="px-3 py-1 rounded bg-black text-white hover:opacity-90"
-          >
-            {state.testing ? 'Restart' : 'Start'}
-          </button>
-
-          {state.testing && (
-            <button
-              type="button"
-              onClick={resetTest}
-              className="px-3 py-1 rounded border hover:bg-gray-50"
-            >
-              Reset
-            </button>
-          )}
         </div>
-      </header>
-
-      {/* Body */}
-      <div className="grid md:grid-cols-[260px,1fr] gap-6">
-        {/* Stepper */}
-        <nav className="border rounded-lg p-3">
-          <ol className="space-y-1">
-            {state.testSuites.map((s: TestSuite) => {
-              const active = s.id === state.currentTestSuite;
-              const statusClass = s.complete ? 'text-green-700' : s.notError ? 'text-gray-700' : 'text-red-700';
-              return (
-                <li key={s.id}>
-                  <button
-                    onClick={() => onStepClick(s.id)}
-                    className={`w-full text-left px-3 py-2 rounded hover:bg-gray-50 ${active ? 'bg-gray-100' : ''}`}
-                  >
-                    <div className={`text-sm font-medium ${statusClass}`}>
-                      {s.label.replaceAll('_', ' ')}
-                    </div>
-                    {s.extra ? <div className="text-xs text-gray-500">{s.extra}</div> : null}
-                  </button>
-                </li>
-              );
-            })}
-          </ol>
-        </nav>
-
-        {/* Step Content (placeholder for now) */}
-        {/* Step Content */}
-<section className="border rounded-lg p-4 min-h-[320px]">
-  <h2 className="text-lg font-semibold mb-3">
-    Step: {currentStep?.label ?? 'unknown'}
-  </h2>
-
-  {currentStep?.id === '2' ? (
-    <div className="flex flex-col md:flex-row gap-4">
-      {/* Speaker description + buttons */}
-      <div className="flex-1 border rounded-lg p-4 bg-blue-100">
-        <p className="mb-4">
-          Please listen to the sample audio and confirm if you can hear it clearly.
-        </p>
-        <div className="flex gap-2">
-          <button
-            onClick={resolveSpeakerCheck}
-            className="px-4 py-2 rounded bg-green-600 text-white"
-          >
-            Yes
-          </button>
-          <button
-            onClick={rejectSpeakerCheck}
-            className="px-4 py-2 rounded border"
-          >
-            No
-          </button>
-        </div>
-      </div>
-
-      {/* Sample Audio */}
-      <div className="flex-1 border rounded-lg p-4">
-        <audio id="sampleMusic" controls className="w-full">
-          <source src="music.mp3" type="audio/mp3" />
-          Your browser does not support the audio element.
-        </audio>
-      </div>
-    </div>
-  ) : (
-    <p className="text-sm text-gray-600">
-      This is the placeholder for the actual test component. In Step 2 we’ll wire real logic:
-      <br />• Browser/permission checks (step 0)
-      <br />• Mic & Speaker tests (steps 1–2)
-      <br />• Resolution tests (step 3)
-      <br />• Connectivity stats (step 4)
-      <br />• RTM messaging (step 5)
-    </p>
-  )}
-
-  {/* Hidden test elements for Agora SDK (keep in DOM) */}
-  <div id={DOM_IDS.TEST_SEND} className="fixed -right-full w-[160px] h-[90px]" />
-  <div id={DOM_IDS.TEST_RECV} className="fixed -right-full w-[160px] h-[90px]" />
-</section>
-
-      </div>
-
-      {/* Footer (optional – layout.tsx might already have one) */}
-      <footer className="mt-8 text-center text-xs text-gray-500">
-        {`APP_ID set: ${APP_ID ? 'yes' : 'no'}`} • Languages: {SUPPORTED_LANGUAGES.join(', ').toUpperCase()}
-      </footer>
+      )}
+      <Footer APP_ID={APP_ID} SUPPORTED_LANGUAGES={SUPPORTED_LANGUAGES} sdkVersion={state.sdkVersion} />
     </main>
   );
 }

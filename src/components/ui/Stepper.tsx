@@ -2,10 +2,9 @@ import React from 'react';
 import { TestSuite } from '@/types';
 
 export interface StepperProps {
-  currentStep: string;
   testSuites: TestSuite[];
-  onStepClick?: (stepId: string) => void;
-  className?: string;
+  currentTestSuite: string;
+  onStepClick: (stepId: string) => void;
 }
 
 export interface StepProps {
@@ -101,11 +100,11 @@ function Step({ step, isActive, isCompleted, isClickable, onClick, isLast }: Ste
   );
 }
 
-export function Stepper({ currentStep, testSuites, onStepClick, className = '' }: StepperProps) {
-  const currentStepIndex = parseInt(currentStep);
+export function Stepper({ testSuites, currentTestSuite, onStepClick }: StepperProps) {
+  const currentStepIndex = parseInt(currentTestSuite);
 
   return (
-    <div className={`w-full ${className}`}>
+    <div className="w-full">
       <div className="flex items-start justify-between px-4 py-8">
         {testSuites.map((step, index) => {
           const isActive = index === currentStepIndex;
@@ -121,7 +120,7 @@ export function Stepper({ currentStep, testSuites, onStepClick, className = '' }
               isCompleted={isCompleted}
               isClickable={isClickable}
               isLast={isLast}
-              onClick={() => onStepClick?.(step.id)}
+              onClick={() => onStepClick(step.id)}
             />
           );
         })}
