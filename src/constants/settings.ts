@@ -143,7 +143,7 @@ export const CHART_CONFIG = {
 } as const;
 
 // Audio file path for speaker test
-export const SAMPLE_AUDIO_PATH = '/assets/music.mp3';
+export const SAMPLE_AUDIO_PATH = '/music.mp3';
 
 // GitHub repository URL
 export const GITHUB_URL = 'https://github.com/AgoraIO/Tools/tree/master/TroubleShooting/Agora-WebRTC-Troubleshooting';

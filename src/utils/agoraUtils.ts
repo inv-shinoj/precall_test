@@ -1,4 +1,5 @@
 import AgoraRTC, { ICameraVideoTrack, IMicrophoneAudioTrack, IAgoraRTCClient } from 'agora-rtc-sdk-ng';
+import { TEST_TIMEOUTS, DOM_IDS } from '@/constants/settings';
 
 /**
  * Utility to check if a camera profile (resolution) is supported.
@@ -22,10 +23,10 @@ export async function checkProfile(
       encoderConfig: profile.resolution,
     });
     // Play the video track
-    localVideoTrackRef.current.play('test-send');
+    localVideoTrackRef.current.play(DOM_IDS.TEST_SEND);
     return new Promise<void>((resolve, reject) => {
       setTimeout(() => {
-        const videoElement = document.querySelector<HTMLVideoElement>('#test-send video');
+        const videoElement = document.querySelector<HTMLVideoElement>(`#${DOM_IDS.TEST_SEND} video`);
         if (videoElement) {
           const videoArea = videoElement.videoWidth * videoElement.videoHeight;
           const profileArea = profile.width * profile.height;
@@ -40,7 +41,7 @@ export async function checkProfile(
           profile.status = 'reject';
           reject(new Error('Video element not found'));
         }
-      }, 1000);
+      }, TEST_TIMEOUTS.RESOLUTION_CHECK);
     });
   } catch (error: any) {
     profile.status = 'reject';

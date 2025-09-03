@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { TestSuite } from '@/types';
 import { VolumeProgress } from './Progress';
+import { TEST_TIMEOUTS, TEST_THRESHOLDS } from '@/constants/settings';
 
 // Import AgoraRTC dynamically to avoid SSR issues
 let AgoraRTC: any = null;
@@ -18,8 +19,6 @@ interface MicrophoneStepProps {
   step: TestSuite;
   onComplete?: () => void;
 }
-
-const TEST_DURATION = 7000; // ms
 
 const MicrophoneStep: React.FC<MicrophoneStepProps> = ({ step, onComplete }) => {
   const [volume, setVolume] = useState(0);
@@ -56,14 +55,14 @@ const MicrophoneStep: React.FC<MicrophoneStepProps> = ({ step, onComplete }) => 
           }
           setTesting(false);
           const avg = sampleCount > 0 ? totalVolume / sampleCount : 0;
-          if (avg < 10) {
+          if (avg < TEST_THRESHOLDS.MINIMUM_VOLUME) {
             setResult('Can barely hear you. Please check your microphone.');
           } else {
             setResult('Microphone works well!');
           }
           // Notify parent after test completes (short delay for UI feedback)
           if (onComplete) setTimeout(onComplete, 1200);
-        }, TEST_DURATION);
+        }, TEST_TIMEOUTS.MICROPHONE_CHECK);
       } catch (err: any) {
         setTesting(false);
         setResult('Microphone access failed: ' + (err?.message || err));

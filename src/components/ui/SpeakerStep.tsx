@@ -1,4 +1,5 @@
 import React from 'react';
+import { SAMPLE_AUDIO_PATH, DOM_IDS } from '@/constants/settings';
 import type { TestSuite } from '@/types';
 
 interface SpeakerStepProps {
@@ -34,8 +35,8 @@ const SpeakerStep: React.FC<SpeakerStepProps> = ({ step, resolveSpeakerCheck, re
         </div>
       </div>
       <div className="flex-1 border border-gray-100 rounded-lg p-6 flex items-center justify-center bg-white">
-        <audio id="sampleMusic" controls className="w-full">
-          <source src="music.mp3" type="audio/mp3" />
+        <audio id={DOM_IDS.SAMPLE_MUSIC} controls className="w-full">
+          <source src={SAMPLE_AUDIO_PATH} type="audio/mp3" />
           Your browser does not support the audio element.
         </audio>
       </div>

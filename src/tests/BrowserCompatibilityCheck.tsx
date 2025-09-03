@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import AgoraRTC from 'agora-rtc-sdk-ng';
+import { TEST_TIMEOUTS } from '@/constants/settings';
 
 interface BrowserCompatibilityCheckProps {
   testSuites: any[];
@@ -40,8 +41,8 @@ const BrowserCompatibilityCheck: React.FC<BrowserCompatibilityCheckProps> = ({
       // Small delay to show result before moving to next test
       setTimeout(() => {
         handleMicrophoneCheck();
-      }, 1000);
-    }, 3000);
+      }, TEST_TIMEOUTS.RESOLUTION_CHECK);
+    }, TEST_TIMEOUTS.BROWSER_CHECK);
   };
 
   const currentTestSuite = testSuites.find(suite => suite.id === "0");

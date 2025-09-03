@@ -22,7 +22,11 @@ import {
   DEFAULT_SENDER_ID,
   DEFAULT_RTM_USER_ID,
   RKEY,
-  SKEY
+  SKEY,
+  TEST_TIMEOUTS,
+  KEY_RESOLUTIONS,
+  TEST_THRESHOLDS,
+  NETWORK_QUALITY
 } from '@/constants/settings';
 import { reducer, getInitialState } from '@/state/reducer';
 
@@ -172,7 +176,7 @@ export default function Page() {
     if (rtmStatus.login === 'success' && rtmStatus.channel === 'success') {
       if (rtmMetrics.messagesSent > 0) {
         const finalSuccessRate = Math.round((rtmMetrics.messagesReceived / rtmMetrics.messagesSent) * 100);
-        if (finalSuccessRate >= 70) {
+        if (finalSuccessRate >= TEST_THRESHOLDS.RTM_SUCCESS_RATE) {
           notError = true;
           extra = `RTM Login: Success</br>Channel Join: Success</br>Messages Sent: ${rtmMetrics.messagesSent}</br>Messages Received: ${rtmMetrics.messagesReceived}</br>Success Rate: ${finalSuccessRate}%</br>Average Latency: ${rtmMetrics.avgLatency}ms</br><strong>RTM functionality working well</strong>`;
         } else {
@@ -195,7 +199,7 @@ export default function Page() {
       setTimeout(() => {
         dispatch({ type: 'SET_RENDER_CHART', payload: false });
       }, 1500);
-    }, 2000);
+    }, TEST_TIMEOUTS.RTM_MESSAGE_INTERVAL);
   }, [dispatch]);
 
   // handle rtm check
@@ -258,10 +262,10 @@ export default function Page() {
         } catch (error) {
           // handle error
         }
-      }, 2000);
+      }, TEST_TIMEOUTS.RTM_MESSAGE_INTERVAL);
       setTimeout(() => {
         finishRTMTest();
-      }, 12000);
+      }, TEST_TIMEOUTS.RTM_CHECK);
     } catch (error: any) {
       dispatch({ type: 'UPDATE_RTM_STATUS', payload: { login: 'failed', channel: 'failed', messaging: 'failed' } });
       dispatch({ type: 'UPDATE_TEST_SUITE', payload: { id: testSuiteId, updates: { notError: false, extra: `RTM test failed: ${error.message}` } } });
@@ -333,7 +337,7 @@ const handleConnectivityCheck = useCallback(async () => {
       } catch (err) {
         console.warn("Failed to get stats:", err);
       }
-    }, 1000);
+    }, TEST_TIMEOUTS.STATS_INTERVAL);
 
   } catch (err: any) {
     dispatch({
@@ -343,7 +347,7 @@ const handleConnectivityCheck = useCallback(async () => {
     return;
   }
 
-  // Stop test after 24 seconds
+  // Stop test after connectivity check timeout
   setTimeout(() => {
     if (connectivityIntervalRef.current) clearInterval(connectivityIntervalRef.current);
     dispatch({ type: "SET_TESTING", payload: false });
@@ -375,9 +379,9 @@ const handleConnectivityCheck = useCallback(async () => {
           notError = false;
         } else {
           let quality = "Good";
-          if (videoBitrate < 100 || audioBitrate < 10) quality = "Poor";
-          else if (videoBitrate < 500 || audioBitrate < 20) quality = "Fair";
-          else if (videoBitrate > 1000 && audioBitrate > 25) quality = "Excellent";
+          if (videoBitrate < NETWORK_QUALITY.FAIR.minVideoBitrate || audioBitrate < NETWORK_QUALITY.FAIR.minAudioBitrate) quality = "Poor";
+          else if (videoBitrate < NETWORK_QUALITY.GOOD.minVideoBitrate || audioBitrate < NETWORK_QUALITY.GOOD.minAudioBitrate) quality = "Fair";
+          else if (videoBitrate > NETWORK_QUALITY.EXCELLENT.minVideoBitrate && audioBitrate > NETWORK_QUALITY.EXCELLENT.minAudioBitrate) quality = "Excellent";
 
           videoPacketLoss = videoPacketLoss !== "-" ? (Number(videoPacketLoss) * 100).toFixed(2) : "-";
           audioPacketLoss = audioPacketLoss !== "-" ? (Number(audioPacketLoss) * 100).toFixed(2) : "-";
@@ -400,7 +404,7 @@ const handleConnectivityCheck = useCallback(async () => {
       // Proceed to RTM test
       handleRTMCheck();
     }, 1500);
-  }, 24000);
+  }, TEST_TIMEOUTS.CONNECTIVITY_CHECK);
 
 }, [initRecvClient, initSendClient, handleRTMCheck]);
 
@@ -440,21 +444,15 @@ const handleConnectivityCheck = useCallback(async () => {
   }).join('<br/>');
 
   // Determine overall success
-  const keyResolutions = [
-    { width: 640, height: 480 },   // 480p
-    { width: 1280, height: 720 },  // 720p
-    { width: 1920, height: 1080 }  // 1080p
-  ];
-
   const keyResolutionsWorking = state.profiles.filter(profile =>
-    keyResolutions.some(
+    KEY_RESOLUTIONS.some(
       key => profile.width === key.width && profile.height === key.height && profile.status === 'resolve'
     )
   ).length;
 
   const successRate = totalCount > 0 ? successCount / totalCount : 0;
 
-  const overallNotError = keyResolutionsWorking >= 2 || successRate >= 0.6;
+  const overallNotError = keyResolutionsWorking >= TEST_THRESHOLDS.KEY_RESOLUTIONS_REQUIRED || successRate >= TEST_THRESHOLDS.MINIMUM_SUCCESS_RATE;
 
   const summaryText = overallNotError
     ? `Summary: ${successCount}/${totalCount} resolutions supported (${Math.round(successRate * 100)}%)`

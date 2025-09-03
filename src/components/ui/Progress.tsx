@@ -1,4 +1,5 @@
 import React from 'react';
+import { TEST_THRESHOLDS } from '@/constants/settings';
 
 export interface ProgressBarProps {
   value: number; // 0-100
@@ -106,7 +107,7 @@ export function VolumeProgress({ level, className = '' }: VolumeProgressProps) {
   const normalizedLevel = Math.min(100, Math.max(0, level));
   let color: ProgressBarProps['color'] = 'primary';
   
-  if (normalizedLevel < 10) {
+  if (normalizedLevel < TEST_THRESHOLDS.MINIMUM_VOLUME) {
     color = 'error';
   } else if (normalizedLevel < 30) {
     color = 'warning';
@@ -125,7 +126,7 @@ export function VolumeProgress({ level, className = '' }: VolumeProgressProps) {
         color={color}
         height="normal"
       />
-      {normalizedLevel < 10 && (
+      {normalizedLevel < TEST_THRESHOLDS.MINIMUM_VOLUME && (
         <p className="text-xs text-red-600">Volume too low - speak louder</p>
       )}
     </div>
